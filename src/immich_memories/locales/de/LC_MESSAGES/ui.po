@@ -2475,3 +2475,39 @@ msgstr "Noch ~{amount}"
 msgid "~{amount} left in this stage"
 msgstr "~{amount} in dieser Phase verbleibend"
 
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Photos"
+msgstr "Fotos"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Live Photos"
+msgstr "Live-Fotos"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Favourites only"
+msgstr "Nur Favoriten"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Person"
+msgstr "Person"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Add a person…"
+msgstr "Person hinzufügen…"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Clear filters"
+msgstr "Filter zurücksetzen"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "{count} pictures"
+msgstr "{count} Bilder"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "Filters"
+msgstr "Filter"
+
+#: web/routes/runs/[run_id]/+page.svelte
+msgid "Find an alternative in the pool"
+msgstr "Alternative in den verfügbaren Medien suchen"

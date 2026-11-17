@@ -1068,6 +1068,9 @@ export interface paths {
         /**
          * Read Pool
          * @description Every picture the cut saw, in capture order, with its fate and whatever holds it.
+         *
+         *     The filters narrow the listing before it is paged: kind (photo, video or live),
+         *     favourites, people (a picture showing any of them) and a first and last day, both inclusive.
          */
         get: operations["read_pool_api_v1_runs__run_id__pool_get"];
         put?: never;
@@ -2192,6 +2195,11 @@ export interface components {
              * @default 0
              */
             outside: number;
+            /**
+             * People
+             * @default []
+             */
+            people: components["schemas"]["PoolPerson"][];
             /** Total */
             total: number;
         };
@@ -2220,10 +2228,27 @@ export interface components {
              * @enum {string}
              */
             kind: "photo" | "video" | "live";
+            /**
+             * People
+             * @default []
+             */
+            people: string[];
             /** Reachable */
             reachable: boolean;
             /** Taken */
             taken: string;
+        };
+        /**
+         * PoolPerson
+         * @description A named person in the pool, with how many of its pictures show them.
+         */
+        PoolPerson: {
+            /** Count */
+            count: number;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
         };
         /**
          * PreflightCheck
@@ -4617,6 +4642,11 @@ export interface operations {
                 offset?: number;
                 limit?: number;
                 reachable_only?: boolean;
+                kind?: ("photo" | "video" | "live")[] | null;
+                favourite?: boolean;
+                person?: string[] | null;
+                taken_from?: string | null;
+                taken_to?: string | null;
             };
             header?: never;
             path: {

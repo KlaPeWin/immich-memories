@@ -2192,6 +2192,14 @@
             "title": "Outside",
             "type": "integer"
           },
+          "people": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PoolPerson"
+            },
+            "title": "People",
+            "type": "array"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -2257,6 +2265,14 @@
             "title": "Kind",
             "type": "string"
           },
+          "people": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "People",
+            "type": "array"
+          },
           "reachable": {
             "title": "Reachable",
             "type": "boolean"
@@ -2277,6 +2293,30 @@
           "hold"
         ],
         "title": "PoolItem",
+        "type": "object"
+      },
+      "PoolPerson": {
+        "description": "A named person in the pool, with how many of its pictures show them.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "count"
+        ],
+        "title": "PoolPerson",
         "type": "object"
       },
       "PreflightCheck": {
@@ -6634,7 +6674,7 @@
     },
     "/api/v1/runs/{run_id}/pool": {
       "get": {
-        "description": "Every picture the cut saw, in capture order, with its fate and whatever holds it.",
+        "description": "Every picture the cut saw, in capture order, with its fate and whatever holds it.\n\nThe filters narrow the listing before it is paged: kind (photo, video or live),\nfavourites, people (a picture showing any of them) and a first and last day, both inclusive.",
         "operationId": "read_pool_api_v1_runs__run_id__pool_get",
         "parameters": [
           {
@@ -6677,6 +6717,93 @@
               "default": false,
               "title": "Reachable Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "photo",
+                      "video",
+                      "live"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "favourite",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Favourite",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "person",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Person"
+            }
+          },
+          {
+            "in": "query",
+            "name": "taken_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Taken From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "taken_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Taken To"
             }
           }
         ],

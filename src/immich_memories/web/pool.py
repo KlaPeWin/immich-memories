@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -22,7 +23,7 @@ from immich_memories.operations.run_index import attempt_dir_for_run
 from immich_memories.operations.storyboard import PLAN_FILE, PROJECTION_FILE, TRACE_FILE
 from immich_memories.store.owner_decisions import CLEARANCE_LEVELS, NEVER_USE
 from immich_memories.web.dependencies import current_config
-from immich_memories.web.schemas import Decision, Hold, Pool, PoolItem
+from immich_memories.web.schemas import Decision, Hold, Pool, PoolItem, PoolPerson
 
 router = APIRouter(prefix="/api/v1", tags=["pool"])
 
@@ -49,6 +50,45 @@ def _kind(asset: Asset) -> Literal["photo", "video", "live"]:
     if asset.type == AssetType.VIDEO:
         return "video"
     return "live" if asset.live_photo_video_id else "photo"
+
+
+def _people_ids(asset: Asset) -> list[str]:
+    return [person.id for person in asset.people]
+
+
+def _passes(
+    asset: Asset,
+    *,
+    kinds: set[str],
+    favourite: bool,
+    people: set[str],
+    taken_from: date | None,
+    taken_to: date | None,
+) -> bool:
+    """Whether one picture survives the page's filters; an empty filter lets everything by."""
+    if kinds and _kind(asset) not in kinds:
+        return False
+    if favourite and not asset.is_favorite:
+        return False
+    if people and not people.intersection(_people_ids(asset)):
+        return False
+    day = asset.local_taken_at.date()
+    return not ((taken_from and day < taken_from) or (taken_to and day > taken_to))
+
+
+def _people_of(assets: list[Asset]) -> list[PoolPerson]:
+    """The named people in these pictures, most pictures first."""
+    names: dict[str, str] = {}
+    counts: Counter[str] = Counter()
+    for asset in assets:
+        for person in asset.people:
+            if person.name:
+                names[person.id] = person.name
+                counts[person.id] += 1
+    return [
+        PoolPerson(id=pid, name=names[pid], count=count)
+        for pid, count in sorted(counts.items(), key=lambda row: (-row[1], names[row[0]]))
+    ]
 
 
 @dataclass
@@ -123,14 +163,35 @@ def read_pool(
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=500)] = 120,
     reachable_only: bool = False,
+    kind: Annotated[list[Literal["photo", "video", "live"]] | None, Query()] = None,
+    favourite: bool = False,
+    person: Annotated[list[str] | None, Query()] = None,
+    taken_from: date | None = None,
+    taken_to: date | None = None,
 ) -> Pool:
-    """Every picture the cut saw, in capture order, with its fate and whatever holds it."""
+    """Every picture the cut saw, in capture order, with its fate and whatever holds it.
+
+    The filters narrow the listing before it is paged: kind (photo, video or live),
+    favourites, people (a picture showing any of them) and a first and last day, both inclusive.
+    """
     attempt = attempt_dir_for_run(run_id, store=open_store(config))
     snapshot = Path(attempt) / SNAPSHOT_NAME if attempt else None
     if attempt is None or snapshot is None or not snapshot.is_file():
         raise HTTPException(404, "This run kept no record of its pool.")
     view = _pool_view(Path(attempt), snapshot)
-    assets = view.pictures(reachable_only=reachable_only)
+    everything = view.pictures(reachable_only=reachable_only)
+    assets = [
+        asset
+        for asset in everything
+        if _passes(
+            asset,
+            kinds=set(kind or ()),
+            favourite=favourite,
+            people=set(person or ()),
+            taken_from=taken_from,
+            taken_to=taken_to,
+        )
+    ]
     page = assets[offset : offset + limit]
     fates, in_cut = view.fates, view.in_cut
     # Only the page's pictures: the holds are read for these ids, not for the whole pool.
@@ -148,9 +209,11 @@ def read_pool(
                 reachable=fates.reachable(asset.id),
                 fate=fates.describe(asset.id),
                 hold=_hold(holds[asset.id]),
+                people=_people_ids(asset),
             )
             for asset in page
         ],
+        people=_people_of(everything),
     )
 
 

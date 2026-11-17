@@ -86,6 +86,17 @@
   const selected = $derived(shots.find((shot) => shot.asset_id === selectedId) ?? shots[0]);
   const videos = $derived((cut?.shots ?? []).filter((shot) => shot.motion).length);
 
+  // The pool opened on the days around the selected shot, so an alternative fits where it was taken.
+  function poolFor(shot: CutShot): string {
+    const day = (offset: number) => {
+      const date = new Date(`${shot.taken.slice(0, 10)}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() + offset);
+      return date.toISOString().slice(0, 10);
+    };
+    const query = new URLSearchParams({ from: day(-1), to: day(1) });
+    return `/app/runs/${encodeURIComponent(run.run_id)}/pool?${query}`;
+  }
+
   function chooseCarrier(assetId: string) {
     filter = 'all';
     selectedId = assetId;
@@ -279,6 +290,7 @@
             <Button size="small" variant="ghost" leadingIcon={mdiArrowLeft} onclick={() => (inspecting = false)}>{t('Back to pictures')}</Button>
           </div>
           {#if editor}<ShotInspector shot={selected} modelPolish={cut.model_polish} captionsRead={cut.captions_read} {editor} runId={run.run_id} />{/if}
+          <Button size="small" variant="outline" class="mt-3 w-full" href={poolFor(selected)}>{t('Find an alternative in the pool')}</Button>
         </div>
       {/if}
     </div>

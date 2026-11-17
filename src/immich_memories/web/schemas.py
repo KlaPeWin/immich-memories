@@ -193,6 +193,16 @@ class PoolItem(BaseModel):
     reachable: bool
     fate: str
     hold: Hold
+    # Immich ids of the people recognised on it, so the page can filter by person.
+    people: list[str] = []
+
+
+class PoolPerson(BaseModel):
+    """A named person in the pool, with how many of its pictures show them."""
+
+    id: str
+    name: str
+    count: int
 
 
 class Pool(BaseModel):
@@ -200,6 +210,8 @@ class Pool(BaseModel):
     # Pictures left out of this listing because the editor never received them.
     outside: int = 0
     items: list[PoolItem]
+    # Everyone named in the pool, most pictures first: the choices of the person filter.
+    people: list[PoolPerson] = []
 
 
 class Decision(BaseModel):

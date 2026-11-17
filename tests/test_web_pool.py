@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 
 from immich_memories.analysis.sources.snapshot import SNAPSHOT_NAME, source_payload
+from immich_memories.api.models import AssetType, Person
 from tests.conftest import make_asset
 from tests.web_api_fixtures import api_client, config_in, save_run, selection_trace
 
@@ -121,3 +122,90 @@ def test_an_explicit_pool_tick_overrides_never_use_for_a_revision_without_forget
         next(item for item in pool if item["asset_id"] == "woods-9")["hold"]["decision"]
         == "never_use"
     )
+
+
+def _mixed_pool(tmp_path):
+    """Five pictures over a week: a photo, a favourite photo, a video, a live photo, a video."""
+    config = config_in(tmp_path)
+    attempt = save_run(config, RUN, trace=selection_trace())
+    ada, bo = Person(id="p-ada", name="Ada"), Person(id="p-bo", name="Bo")
+    pool = [
+        make_asset("garden-1", file_created_at=datetime(2024, 6, 8, 10, tzinfo=UTC)),
+        make_asset("woods-9", file_created_at=datetime(2024, 6, 9, 10, tzinfo=UTC), is_favorite=True),
+        make_asset("lake-1", file_created_at=datetime(2024, 6, 10, 10, tzinfo=UTC)),
+        make_asset("path-2", file_created_at=datetime(2024, 6, 11, 10, tzinfo=UTC)),
+        make_asset("hill-3", file_created_at=datetime(2024, 6, 12, 10, tzinfo=UTC)),
+    ]
+    by_id = {asset.id: asset for asset in pool}
+    for photo in ("garden-1", "woods-9", "path-2"):
+        by_id[photo].type = AssetType.IMAGE
+    by_id["path-2"].live_photo_video_id = "path-2-motion"
+    by_id["garden-1"].people = [ada]
+    by_id["woods-9"].people = [ada, bo]
+    by_id["lake-1"].people = [bo]
+    (attempt / SNAPSHOT_NAME).write_text(json.dumps(source_payload(pool), default=str))
+    return api_client(config)
+
+
+def _ids(client, **params):
+    pool = client.get(f"/api/v1/runs/{RUN}/pool", params=params).json()
+    return [item["asset_id"] for item in pool["items"]], pool
+
+
+def test_the_pool_can_be_narrowed_to_photos_videos_or_live_photos(tmp_path):
+    client = _mixed_pool(tmp_path)
+
+    photos, _ = _ids(client, kind="photo")
+    films, _ = _ids(client, kind="video")
+    both, _ = _ids(client, kind=["photo", "live"])
+
+    assert photos == ["garden-1", "woods-9"]
+    assert films == ["lake-1", "hill-3"]
+    assert both == ["garden-1", "woods-9", "path-2"]
+
+
+def test_the_pool_can_show_only_favourites(tmp_path):
+    client = _mixed_pool(tmp_path)
+
+    favourites, pool = _ids(client, favourite=True)
+
+    assert favourites == ["woods-9"]
+    assert pool["total"] == 1
+
+
+def test_the_pool_can_be_cut_to_a_window_of_days_both_ends_included(tmp_path):
+    client = _mixed_pool(tmp_path)
+
+    window, pool = _ids(client, taken_from="2024-06-09", taken_to="2024-06-11")
+    from_only, _ = _ids(client, taken_from="2024-06-11")
+    to_only, _ = _ids(client, taken_to="2024-06-08")
+
+    assert window == ["woods-9", "lake-1", "path-2"] and pool["total"] == 3
+    assert from_only == ["path-2", "hill-3"]
+    assert to_only == ["garden-1"]
+
+
+def test_the_pool_can_be_filtered_by_person_and_lists_who_is_in_it(tmp_path):
+    client = _mixed_pool(tmp_path)
+
+    ada, pool = _ids(client, person="p-ada")
+    either, _ = _ids(client, person=["p-ada", "p-bo"])
+
+    assert ada == ["garden-1", "woods-9"]
+    assert either == ["garden-1", "woods-9", "lake-1"]
+    # The choices are the whole pool's people, not just the filtered page's, most pictures first.
+    assert [(p["id"], p["name"], p["count"]) for p in pool["people"]] == [
+        ("p-ada", "Ada", 2),
+        ("p-bo", "Bo", 2),
+    ]
+    assert pool["items"][1]["people"] == ["p-ada", "p-bo"]
+
+
+def test_filters_combine_and_page_through_the_narrowed_list(tmp_path):
+    client = _mixed_pool(tmp_path)
+
+    only, pool = _ids(client, kind="photo", person="p-bo", taken_from="2024-06-09")
+    second_page, paged = _ids(client, kind=["photo", "video", "live"], offset=3, limit=2)
+
+    assert only == ["woods-9"] and pool["total"] == 1
+    assert second_page == ["path-2", "hill-3"] and paged["total"] == 5

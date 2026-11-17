@@ -27,13 +27,82 @@
   let refusal = $state('');
   let sentinel = $state<HTMLElement>();
 
+  // The filters. They start from the address, so the cut's "find an alternative" button can open the
+  // pool on the day of the shot it replaces: ?from=2026-10-02&to=2026-10-02&kind=photo,live&fav=1&person=a,b
+  type Kind = 'photo' | 'video' | 'live';
+  const KINDS: [Kind, string][] = [['photo', N_('Photos')], ['video', N_('Videos')], ['live', N_('Live Photos')]];
+  const params = page.url.searchParams;
+  let kinds = $state<Kind[]>((params.get('kind') ?? '').split(',').filter((k): k is Kind => KINDS.some(([kind]) => kind === k)));
+  let favourite = $state(params.get('fav') === '1');
+  let chosenPeople = $state<string[]>((params.get('person') ?? '').split(',').filter(Boolean));
+  let takenFrom = $state(params.get('from') ?? '');
+  let takenTo = $state(params.get('to') ?? '');
+  let people = $state<Pool['people']>([]);
+  const filtered = $derived(kinds.length > 0 || favourite || chosenPeople.length > 0 || takenFrom !== '' || takenTo !== '');
+
+  // Every picture seen so far, whatever the filters show now, so a tick survives a change of filter.
+  let known = $state<Record<string, Item>>({});
+
+  function filterQuery(): string {
+    const query = new URLSearchParams();
+    for (const kind of kinds) query.append('kind', kind);
+    if (favourite) query.set('favourite', 'true');
+    for (const person of chosenPeople) query.append('person', person);
+    if (takenFrom) query.set('taken_from', takenFrom);
+    if (takenTo) query.set('taken_to', takenTo);
+    return query.toString();
+  }
+
+  // Keep the address in step with the filters, so a reload or the back button lands on the same view.
+  function keepAddress() {
+    const query = new URLSearchParams();
+    if (kinds.length) query.set('kind', kinds.join(','));
+    if (favourite) query.set('fav', '1');
+    if (chosenPeople.length) query.set('person', chosenPeople.join(','));
+    if (takenFrom) query.set('from', takenFrom);
+    if (takenTo) query.set('to', takenTo);
+    const text = query.toString();
+    void goto(`${page.url.pathname}${text ? `?${text}` : ''}`, { replaceState: true, keepFocus: true, noScroll: true });
+  }
+
+  function refilter() {
+    items = [];
+    total = null;
+    keepAddress();
+    void more();
+  }
+
+  function toggleKind(kind: Kind) {
+    kinds = kinds.includes(kind) ? kinds.filter((k) => k !== kind) : [...kinds, kind];
+    refilter();
+  }
+
+  function addPerson(id: string) {
+    if (id && !chosenPeople.includes(id)) chosenPeople = [...chosenPeople, id];
+    refilter();
+  }
+
+  function clearFilters() {
+    kinds = [];
+    favourite = false;
+    chosenPeople = [];
+    takenFrom = '';
+    takenTo = '';
+    refilter();
+  }
+
+  const personName = (id: string) => people.find((person) => person.id === id)?.name ?? id;
+
   async function more() {
     if (loading || (total !== null && items.length >= total)) return;
     loading = true;
     try {
-      const pool = await api<Pool>(`/runs/${encodeURIComponent(runId)}/pool?offset=${items.length}&limit=120&reachable_only=${!showOutside}`);
+      const extra = filterQuery();
+      const pool = await api<Pool>(`/runs/${encodeURIComponent(runId)}/pool?offset=${items.length}&limit=120&reachable_only=${!showOutside}${extra ? `&${extra}` : ''}`);
       items = [...items, ...pool.items];
+      known = { ...known, ...Object.fromEntries(pool.items.map((item) => [item.asset_id, item])) };
       total = pool.total;
+      people = pool.people ?? [];
       if (!showOutside) outside = pool.outside ?? 0;
     } catch (reason) {
       // A run from before cuts recorded their pool has none to show; that is an answer, not a crash.
@@ -61,12 +130,13 @@
   });
 
   const ticked = (item: Item) => ticks[item.asset_id] ?? item.in_cut;
-  const include = $derived(items.filter((item) => !item.in_cut && ticks[item.asset_id] === true).map((i) => i.asset_id));
-  const exclude = $derived(items.filter((item) => item.in_cut && ticks[item.asset_id] === false).map((i) => i.asset_id));
+  const include = $derived(Object.values(known).filter((item) => !item.in_cut && ticks[item.asset_id] === true).map((i) => i.asset_id));
+  const exclude = $derived(Object.values(known).filter((item) => item.in_cut && ticks[item.asset_id] === false).map((i) => i.asset_id));
 
   async function decide(item: Item, action: 'never_use' | 'clear' | 'forget') {
     const { body } = await post<Hold>(`/pictures/${encodeURIComponent(item.asset_id)}/decision`, { action, level });
     items = items.map((row) => (row.asset_id === item.asset_id ? { ...row, hold: body } : row));
+    known = { ...known, [item.asset_id]: { ...item, hold: body } };
     if (action === 'never_use' && item.in_cut) ticks = { ...ticks, [item.asset_id]: false };
     clearing = null;
   }
@@ -112,6 +182,48 @@
       <input type="checkbox" checked={showOutside} onchange={toggleOutside} />
       {t('Also show the {count} pictures outside this memory', { count: outside })}
     </label>
+  {/if}
+
+  {#if !missing}
+    <div class="flex flex-col gap-3 rounded-2xl border border-gray-200 p-3 dark:border-gray-800" role="group" aria-label={t('Filters')}>
+      <div class="flex flex-wrap items-center gap-2">
+        {#each KINDS as [kind, label] (kind)}
+          <Button size="small" shape="round" aria-pressed={kinds.includes(kind)} variant={kinds.includes(kind) ? 'filled' : 'outline'}
+            color={kinds.includes(kind) ? 'primary' : 'secondary'} onclick={() => toggleKind(kind)}>{t(label)}</Button>
+        {/each}
+        <label class="ml-2 flex items-center gap-2 text-sm">
+          <input type="checkbox" bind:checked={favourite} onchange={refilter} />{t('Favourites only')}
+        </label>
+      </div>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="flex flex-col gap-1 text-xs font-medium">{t('From')}
+          <input type="date" class="rounded-lg border border-gray-300 bg-light px-2 py-1 text-sm dark:border-gray-700" bind:value={takenFrom} onchange={refilter} />
+        </label>
+        <label class="flex flex-col gap-1 text-xs font-medium">{t('To')}
+          <input type="date" class="rounded-lg border border-gray-300 bg-light px-2 py-1 text-sm dark:border-gray-700" bind:value={takenTo} onchange={refilter} />
+        </label>
+        {#if people.length}
+          <label class="flex flex-col gap-1 text-xs font-medium">{t('Person')}
+            <select class="rounded-lg border border-gray-300 bg-light px-2 py-1 text-sm dark:border-gray-700" value=""
+              onchange={(event) => { addPerson(event.currentTarget.value); event.currentTarget.value = ''; }}>
+              <option value="">{t('Add a person…')}</option>
+              {#each people.filter((person) => !chosenPeople.includes(person.id)) as person (person.id)}
+                <option value={person.id}>{person.name} ({person.count})</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+        {#if filtered}<Button size="small" variant="ghost" onclick={clearFilters}>{t('Clear filters')}</Button>{/if}
+        {#if total !== null}<Text size="small" color="muted" class="ml-auto tabular-nums">{t('{count} pictures', { count: total })}</Text>{/if}
+      </div>
+      {#if chosenPeople.length}
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          {#each chosenPeople as id (id)}
+            <Button size="tiny" shape="round" variant="outline" onclick={() => { chosenPeople = chosenPeople.filter((p) => p !== id); refilter(); }}>{personName(id)} ✕</Button>
+          {/each}
+        </div>
+      {/if}
+    </div>
   {/if}
 
   {#if missing}
