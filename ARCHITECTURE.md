@@ -215,7 +215,9 @@ the code named beside it; if the two disagree, the code wins and this entry is s
   draft's Basic line so the model writes the summary. A list of places the model repeats is
   said once (`one_place_once`), and the plan records the summary's language as
   `story.thesis_locale`: the Immich label (`operations/film_labelling.py`) uses the summary
-  only when the render is in that language.
+  only when the render is in that language. The file keeps its English name on disk; the
+  name Immich and a web download show is built in the film's language
+  (`operations/shown_film_name.py`).
 - **Notable record**: a picture an episode reading named as a moment worth a place of its own,
   with the reason (`banked_notable_records` in `runtime/period_accounts.py`). Only a story holding one
   can earn an N seat.
@@ -640,6 +642,7 @@ src/immich_memories/
 │   ├── asset_service.py        # AssetService: asset/video download
 │   ├── person_service.py       # PersonService: person/face operations
 │   ├── album_service.py        # AlbumService: album operations
+│   ├── film_relabel.py         # FilmRelabeler: re-write a delivered film's label, drop stale app tags
 │   ├── permissions.py          # API-key read/upload capabilities; missing read rights stop a cut
 │   ├── sync_client.py          # Sync wrapper for async client
 │   ├── accounts.py             # open_accounts: one /users/me-verified client per selected account (#1500)
@@ -913,6 +916,7 @@ src/immich_memories/
 │   │   ├── admission.py        # Acquire and admit the source-eligible corpus every editorial pass reads.
 │   │   ├── asset_merit.py      # How much an asset is worth showing, on one scale for photographs and video.
 │   │   ├── collages.py         # A collage page (gutters or an even grid of tiles) is out when its day holds its frames, and never opens a film
+│   │   ├── decision_spans.py   # Each selection stage and editorial pass as a `select <name>` trace span
 │   │   ├── duplicate_hashing.py # Perceptual hashing for duplicates
 │   │   ├── exact_copies.py     # Same SHA-1 + kind under distinct UUIDs: one item (a Live copy with its motion, favourite, primary owner, ids); a video equal to a Live Photo's motion folds into the Live Photo; any member's star stars the kept item
 │   │   ├── favourite_law.py    # Within a moment, the favourite wins. Always.
@@ -957,6 +961,7 @@ src/immich_memories/
 │       ├── async_bridge.py     # Resolve editorial async work from synchronous CLI and UI callers.
 │       ├── batch.py            # A stage's independent prompts as one provider batch (half price, async): the two wire dialects and their transports
 │       ├── failures.py         # Separate "the model could not answer" from a bug in the calling code
+│       ├── genai_trace.py      # Each LLM call as a GenAI `chat {model}` trace span: tokens, finish reasons, opt-in prompt text
 │       ├── metrics.py          # What a run spent on the LLM, counted where the answers arrive.
 │       ├── provider_failure.py # What a 4xx/5xx means: refused, come back later, down, or a bad credential
 │       ├── provider_health.py  # ProviderHealth: what a provider's answer says about its availability (preflight)
@@ -1169,6 +1174,7 @@ src/immich_memories/
 │   ├── request_checks.py       # Host allow-list, cross-site writes, body caps and CSP with built-client hashes
 │   ├── runs.py                 # GET /api/v1/runs[/{id}[/child-output]]: RunDatabase, run index, transcripts
 │   ├── run_upload.py           # POST /api/v1/runs/{id}/upload: a finished film to Immich, capability-checked
+│   ├── run_label.py            # POST /api/v1/runs/{id}/label: re-label a delivered film in Immich
 │   ├── cut.py                  # /runs/{id}/cut (storyboard + trace + polish + siblings), /story, /revisions
 │   ├── pool.py                 # /runs/{id}/pool and /pictures/{id}/decision (Never use, Clear hold)
 │   ├── media.py                # /assets/{id}/thumbnail (shared cache), /video (Range-streamed), /people/{id}/face
@@ -1185,8 +1191,10 @@ src/immich_memories/
 │   ├── library.py              # GET /people, /albums, /trips, /special-days for the brief's pickers
 │   ├── connection.py           # /connection: the Immich URL + key saved to the database; never follows a new URL
 │   ├── suggestions.py          # /suggestions: what `auto suggest` offers, generate one as `auto run` would
+│   ├── telemetry.py            # /api/v1/telemetry: is tracing on; the client's spans forwarded to the collector, scrubbed
 │   ├── updates.py              # /api/v1/updates (the button) and /updates/daily (the banner)
-│   ├── roster.py               # /roster: the store's people registry (roles, relationships, alias link/unlink) for People
+│   ├── roster.py               # /roster: the store's people registry (roles, relationships, alias link/unlink) for People;
+│   │                           #   /roster/tree, the family tree the page draws in the browser
 │   ├── people_accounts.py      # /roster/owners (who owns each account) and /accounts/{name}/people (pick a person to link)
 │   ├── settings.py             # /settings: every setting + its source, saved to the database; /caches
 │   ├── setting_inputs.py       # What each setting accepts (choices, bounds, secret) read from the config schema
@@ -1204,6 +1212,9 @@ src/immich_memories/
 │   ├── run_tracker.py          # Pipeline run tracking
 │   ├── run_id.py               # Run ID generation
 │   ├── models.py               # Run/phase data models
+│   ├── otel.py                 # OpenTelemetry traces: live spans, TRACEPARENT into children, when OTEL_EXPORTER_OTLP_ENDPOINT is set
+│   ├── otel_hops.py            # Routes, HTTP calls, store queries and child programs as spans; paths and ids scrubbed
+│   ├── trace_redaction.py      # What a span keeps: argv without names/free text/paths, the export-time scrub of every span
 │   └── system_info.py          # System info collection
 │
 ├── db/                         # The store (#871): one versioned database on SQLite or PostgreSQL
@@ -1316,6 +1327,10 @@ src/immich_memories/
 │   ├── kinship.py              # suggest_relationships(): what the confirmed tree implies (grandparents,
 │   │                           # aunts/uncles, cousins, in-laws, shared-parent siblings), with the chain;
 │   │                           # pure, never stored until somebody accepts one (#2795)
+│   ├── family_tree.py          # family_tree(): the People page's tree from the confirmed close ties
+│   │                           # (rows, couples, families, parentless sibling groups, dotted suggestions,
+│   │                           # the count left out); pure, deterministic (#2797)
+│   ├── family_tree_layout.py   # place(): x along each row by down/up sweeps and pooled adjacent violators
 │   └── editor.py               # The companion editor's model: the registry as rows, and back; one row per
 │                               # pair (a detected link hides once the pair has a real relationship), plus
 │                               # kinship's suggestions, computed at read time so the page refreshes them live
@@ -1444,7 +1459,7 @@ src/immich_memories/
 │   ├── notification_state.py   # Durable, sanitized notification delivery health (store row id 1)
 │   ├── catalogue.py            # The special-days catalogue in the store: load/save, entries, scope
 │   ├── trip_input_cache.py     # Durable, identity-checked inputs for auto trip discovery
-│   ├── notifications.py        # Apprise notification integration
+│   ├── notifications.py        # Apprise notifications, titled and worded in the film's language
 │   ├── runner.py               # Auto-run orchestrator (lease, subprocess, attempt record)
 │   ├── in_process_scheduler.py # Daily timer inside the UI/Docker process
 │   ├── runtime_provenance.py   # Which code a scheduled job actually ran: version, commit, checkout age
@@ -1536,6 +1551,9 @@ src/immich_memories/
 ├── locked_file.py              # file_lock(): one writer at a time on a file several processes rewrite
 │                               # (the SQLite migration lock, the place-name cache)
 ├── i18n.py                     # Internationalization
+├── operational_warnings.py     # Warnings as `warn.<code>?params`, worded in the film's language where read
+├── progress_text.py            # Progress headings as a stage key + params (`stage.<key>?params` as one string),
+│                               #   worded by the web client (web/src/lib/stages.ts) and in English for the CLI
 ├── i18n_places.py              # Country names in the film's language (CLDR, offline)
 ├── place_names.py              # Offline island boxes and short island/region names
 ├── place_name_translations.py  # Island and region names for the languages whose titles take no preposition
@@ -1798,6 +1816,29 @@ before discovery through failure or completion. `span_store.py` persists spans a
 through Alembic revision `0007_timing`, on SQLite or PostgreSQL. No span writes to the database.
 `peak_memory.py` gives each span of a measured run its peak RSS, own and with child processes: the
 `ru_maxrss` lifetime high at both ends, plus one sampler thread (libproc on macOS, /proc on Linux).
+`otel.py` makes each measured span an OpenTelemetry span too, exported as it closes by the SDK
+when the standard `OTEL_EXPORTER_OTLP_ENDPOINT` is set (the API's no-op tracer otherwise). The run's
+root span opens at process start and closes after its outcome is saved, carrying status and LLM
+spend. Parents put their current span in a child's `TRACEPARENT` (web jobs, scheduled generation),
+so a run joins the trace that started it; `RunIdFilter` stamps `trace_id`/`span_id` on log lines.
+`web/telemetry.py` tells the client whether tracing is on and forwards its OTLP/JSON batches to
+the collector with the server's settings, scrubbed by `otel_hops.scrub`; the client loads its
+tracer (`web/src/lib/tracing-sdk.ts`) as a lazy chunk only then, makes each `post()` a `ui` action
+span and each page change a `route` span, and parents the requests made meanwhile to them.
+`otel_hops.py` adds the hops while exporting: FastAPI server spans (the served app of the web
+server, the inference service, the GPU and render workers), httpx client spans named by method and
+id-free path, SQLAlchemy query spans, and a `Popen` hook timing each child program.
+`trace_redaction.py` decides what a span keeps: a child's arguments lose paths, ids and (unless
+`otel.capturing_content()`) the values of the CLI flags that carry names or free text, and the
+exporter runs `redacted` on every span, cutting paths and secrets from names, attributes, events
+and status, and tracebacks to the app's frames, before anything leaves.
+`analysis/corpus/decision_spans.py` turns each selection stage and editorial pass the corpus
+trace records into a `select <name>` span with counts and a `clip.dropped` event per clip, and
+`run_observations._film` puts the finished film on the run's root span.
+`analysis/llm/genai_trace.py` wraps each logical LLM call (reader, caption worker, each batch line)
+in a `chat {model}` CLIENT span with the GenAI semantic-convention attributes; `record_reply` adds
+the billed tokens to the call in flight, the transport observer its attempts and finish reasons.
+Prompt and reply text go in only with `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`.
 
 `tracking/report.py` allowlists diagnostic fields. `report_privacy.py` redacts the chosen strings and
 assigns per-report salted IDs. `report_logs.py` shortens the pasted log (one line per progress stage, repeats counted); the bundle's log stays whole. `report_service.py` assembles the same report for `report` and the HTTP

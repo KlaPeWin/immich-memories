@@ -29,7 +29,12 @@ from immich_memories.people.companion import (
 from immich_memories.people.companion import bind_alias as _bind_alias
 from immich_memories.people.companion import decline_alias as _decline_alias
 from immich_memories.people.companion import unbind_alias as _unbind_alias
-from immich_memories.people.kinship import Fact, Hop, Suggestion, suggest_relationships
+from immich_memories.people.kinship import (
+    Hop,
+    Suggestion,
+    facts_from_document,
+    suggest_relationships,
+)
 from immich_memories.people.relationships import DETECTED_KINDS, RELATIONSHIP_CHOICES
 from immich_memories.people.signatures import Tier, pair_key
 
@@ -73,6 +78,15 @@ FLAGGED_KINDS = frozenset({"twin", "duplicate"})
 RELINK = "relink"
 
 
+@dataclass(frozen=True)
+class ChainStep:
+    """One step of a suggestion's chain: `person` is `kind` (`parent-of`) `other`."""
+
+    person: str
+    kind: str
+    other: str
+
+
 @dataclass
 class LinkView:
     """One edge, and what the user has said about it."""
@@ -89,6 +103,9 @@ class LinkView:
     # release without ever saying what the pair is; rejected; named: a real relationship;
     # suggested: the family tree implies it, and `via` names the chain.
     status: str = NAMED
+    # A suggestion's chain as keys the client words in the reader's language; `via` is the
+    # English sentence of the same chain.
+    chain: list[ChainStep] = field(default_factory=list)
 
     @property
     def prompt(self) -> str:
@@ -176,21 +193,7 @@ def accept_suggestions(store: Store, person_id: str) -> PersonView | None:
 
 def _tree_suggestions(entries: list[dict[str, Any]]) -> list[Suggestion]:
     """What the confirmed relationships imply, with every answered "no" kept out."""
-    canonical = {pid: entry_ids(entry)[0] for entry in entries for pid in entry_ids(entry)}
-    facts: list[Fact] = []
-    declined: list[Fact] = []
-    for entry in entries:
-        own = entry_ids(entry)[0]
-        for link in _mappings(_mapping(entry.get(CONFIRMED)).get("links")):
-            other = canonical.get(str(link.get("with")))
-            if other is None or other == own:
-                continue
-            fact = Fact(own, str(link.get("kind") or "link"), other)
-            if str(link.get("decision") or CONFIRMED) == REJECTED:
-                declined.append(fact)
-            elif fact.kind not in DETECTED_KINDS:
-                facts.append(fact)
-    return suggest_relationships(facts, declined)
+    return suggest_relationships(*facts_from_document(entries))
 
 
 def _suggested_link(suggestion: Suggestion, names: dict[str, str]) -> LinkView:
@@ -203,7 +206,20 @@ def _suggested_link(suggestion: Suggestion, names: dict[str, str]) -> LinkView:
         inferred=True,
         reverse_kind=suggestion.reverse_kind,
         status=SUGGESTED,
+        chain=_chain_steps(suggestion, names),
     )
+
+
+def _chain_steps(suggestion: Suggestion, names: dict[str, str]) -> list[ChainStep]:
+    """The chain as (person, kind, other) steps, the first one starting at the suggested person."""
+    people = [
+        names.get(person, _GONE)
+        for person in (suggestion.source, *(h.person for h in suggestion.hops))
+    ]
+    return [
+        ChainStep(person=people[index], kind=f"{hop.relation}-of", other=people[index + 1])
+        for index, hop in enumerate(suggestion.hops)
+    ]
 
 
 def _chain(hops: tuple[Hop, ...], names: dict[str, str]) -> str:

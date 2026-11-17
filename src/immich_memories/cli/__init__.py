@@ -50,7 +50,7 @@ def _warn_about_unauthenticated_external_bind(config: Config, host: str) -> None
 def _quiet_request_logs(level: str | None) -> None:
     """One line per request buries every command's own output; -v shows them again."""
     if level != "DEBUG":
-        for name in ("httpx", "httpcore"):
+        for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -158,6 +158,13 @@ def main(
     level = "DEBUG" if verbose else (log_level.upper() if log_level else None)
     configure_logging(level=level)
     ctx.obj["log_level"] = level
+    from immich_memories.tracking import otel
+
+    # Before any work, so the first span already joins the trace that started this process.
+    otel.setup()
+    if ctx.invoked_subcommand:
+        # Closed by click once the command returns: startup, the run and what follows nest here.
+        ctx.with_resource(otel.command(ctx.invoked_subcommand, started=process_start.started()))
     _quiet_request_logs(level)
     if ctx.meta.get("help_requested"):
         return

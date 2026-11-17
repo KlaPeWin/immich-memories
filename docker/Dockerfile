@@ -4,7 +4,7 @@
 # The web client (#1580): it is not committed, so the image builds it from web/. Every wheel of
 # the app carries it (hatch_build.py refuses one without it).
 # WHY: pinned to digest, like every base image here.
-FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS web-client
+FROM node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS web-client
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -13,7 +13,7 @@ RUN npm run build
 
 # Stage 1: Build dependencies
 # WHY: pinned to digest to prevent supply-chain attacks via tag mutation
-FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce AS builder
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS builder
 
 # A failing command inside a pipe (the dependency pin filter below) fails the build.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -122,7 +122,7 @@ RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/wheels ./services/render-wor
 
 
 # Stage 2: Runtime image
-FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 WORKDIR /app
 

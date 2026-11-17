@@ -4,16 +4,21 @@
   import { page } from '$app/state';
   import { Button, Heading, LoadingSpinner, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
   import { mdiArrowLeft, mdiEyeOutline, mdiShieldCheckOutline } from '@mdi/js';
-  import { api, ApiError, post, thumbnail } from '$lib/api';
-  import type { components } from '$lib/api-types';
-  import { N_, t } from '$lib/i18n.svelte';
+  import { api, ApiError, post, thumbnail } from '#lib/api.ts';
+  import type { components } from '#lib/api-types.ts';
+  import { N_, t } from '#lib/i18n.svelte.ts';
 
   type Pool = components['schemas']['Pool'];
   type Item = components['schemas']['PoolItem'];
   type Hold = components['schemas']['Hold'];
   type Revision = components['schemas']['Revision'];
+  type Edits = components['schemas']['RevisionEdits'];
 
   const runId = $derived(page.params.run_id ?? '');
+  // The revision the owner came from: the ticks start from it, and a save keeps its trims and swaps.
+  const from = $derived(Number(page.url.searchParams.get('revision')) || null);
+  const cutHref = $derived(`/app/runs/${encodeURIComponent(runId)}${from == null ? '' : `?revision=${from}`}`);
+  let base = $state<Required<Edits>>({ removed: [], segments: {}, swaps: {}, added: [] });
   let items = $state<Item[]>([]);
   let total = $state<number | null>(null);
   let outside = $state(0);
@@ -29,15 +34,15 @@
   let sentinel = $state<HTMLElement>();
 
   // The filters. They start from the address, so the cut's "find an alternative" button can open the
-  // pool on the day of the shot it replaces: ?from=2026-10-02&to=2026-10-02&kind=photo,live&fav=1&person=a,b
+  // pool on the day of the shot it replaces: ?taken_from=2026-10-02&taken_to=2026-10-02&kind=photo,live&fav=1&person=a,b
   type Kind = 'photo' | 'video' | 'live';
   const KINDS: [Kind, string][] = [['photo', N_('Photos')], ['video', N_('Videos')], ['live', N_('Live Photos')]];
   const params = page.url.searchParams;
   let kinds = $state<Kind[]>((params.get('kind') ?? '').split(',').filter((k): k is Kind => KINDS.some(([kind]) => kind === k)));
   let favourite = $state(params.get('fav') === '1');
   let chosenPeople = $state<string[]>((params.get('person') ?? '').split(',').filter(Boolean));
-  let takenFrom = $state(params.get('from') ?? '');
-  let takenTo = $state(params.get('to') ?? '');
+  let takenFrom = $state(params.get('taken_from') ?? '');
+  let takenTo = $state(params.get('taken_to') ?? '');
   // The shot being replaced, from the cut's button: highlighted, and scrolled to once it is on the page.
   const focusId = params.get('focus') ?? '';
   let scrolled = false;
@@ -45,7 +50,7 @@
   const filtered = $derived(kinds.length > 0 || favourite || chosenPeople.length > 0 || takenFrom !== '' || takenTo !== '');
 
   // Every picture seen so far, whatever the filters show now, so a tick survives a change of filter.
-  let known = $state<Record<string, Item>>({});
+  let seen = $state<Record<string, Item>>({});
 
   function filterQuery(): string {
     const query = new URLSearchParams();
@@ -63,11 +68,13 @@
     if (kinds.length) query.set('kind', kinds.join(','));
     if (favourite) query.set('fav', '1');
     if (chosenPeople.length) query.set('person', chosenPeople.join(','));
-    if (takenFrom) query.set('from', takenFrom);
-    if (takenTo) query.set('to', takenTo);
+    if (takenFrom) query.set('taken_from', takenFrom);
+    if (takenTo) query.set('taken_to', takenTo);
     if (focusId) query.set('focus', focusId);
+    // The revision the owner came from stays in the address: the ticks start from it.
+    if (from != null) query.set('revision', String(from));
     const text = query.toString();
-    void goto(`${page.url.pathname}${text ? `?${text}` : ''}`, { replaceState: true, keepFocus: true, noScroll: true });
+    void goto(`${page.url.pathname}${text ? `?${text}` : ''}`, { replace: true, shallow: true, reset: false });
   }
 
   function refilter() {
@@ -105,7 +112,7 @@
       const extra = filterQuery();
       const pool = await api<Pool>(`/runs/${encodeURIComponent(runId)}/pool?offset=${items.length}&limit=120&reachable_only=${!showOutside}${extra ? `&${extra}` : ''}`);
       items = [...items, ...pool.items];
-      known = { ...known, ...Object.fromEntries(pool.items.map((item) => [item.asset_id, item])) };
+      seen = { ...seen, ...Object.fromEntries(pool.items.map((item) => [item.asset_id, item])) };
       total = pool.total;
       people = pool.people ?? [];
       if (!showOutside) outside = pool.outside ?? 0;
@@ -140,23 +147,59 @@
     return () => observer.disconnect();
   });
 
-  const ticked = (item: Item) => ticks[item.asset_id] ?? item.in_cut;
-  const include = $derived(Object.values(known).filter((item) => !item.in_cut && ticks[item.asset_id] === true).map((i) => i.asset_id));
-  const exclude = $derived(Object.values(known).filter((item) => item.in_cut && ticks[item.asset_id] === false).map((i) => i.asset_id));
+  $effect(() => {
+    const number = from;
+    const id = runId;
+    if (number == null) return;
+    void api<Revision[]>(`/runs/${encodeURIComponent(id)}/revisions`).then((found) => {
+      const opened = found.find((revision) => revision.number === number);
+      if (opened)
+        base = { removed: opened.removed ?? [], segments: opened.segments ?? {}, swaps: opened.swaps ?? {}, added: opened.added ?? [] };
+    });
+  });
+
+  // A tick belongs to a shot's place in the cut: a picture swapped in stands for the shot it replaced.
+  const slots = $derived(Object.fromEntries(Object.entries(base.swaps).map(([shot, picture]) => [picture, shot])));
+  const slot = (item: Item) => slots[item.asset_id] ?? item.asset_id;
+  // Everything seen so far, not just what the filters show now: a tick keeps its meaning when they change.
+  const known = $derived(new Map(Object.entries(seen)));
+  const inCut = (id: string) => id in base.swaps || !!known.get(id)?.in_cut;
+  const inBase = (id: string) => (inCut(id) ? !base.removed.includes(id) : base.added.includes(id));
+  const ticked = (item: Item) => ticks[slot(item)] ?? inBase(slot(item));
+  // What the ticks change from the revision the owner came from.
+  const changed = $derived(Object.entries(ticks).filter(([id, on]) => on !== inBase(id)));
+  const include = $derived(changed.filter(([, on]) => on).length);
+  const exclude = $derived(changed.filter(([, on]) => !on).length);
 
   async function decide(item: Item, action: 'never_use' | 'clear' | 'forget') {
     const { body } = await post<Hold>(`/pictures/${encodeURIComponent(item.asset_id)}/decision`, { action, level });
     items = items.map((row) => (row.asset_id === item.asset_id ? { ...row, hold: body } : row));
-    known = { ...known, [item.asset_id]: { ...item, hold: body } };
-    if (action === 'never_use' && item.in_cut) ticks = { ...ticks, [item.asset_id]: false };
+    seen = { ...seen, [item.asset_id]: { ...item, hold: body } };
+    if (action === 'never_use' && ticked(item)) ticks = { ...ticks, [slot(item)]: false };
     clearing = null;
+  }
+
+  // The revision the owner came from with these ticks: its trims and swaps stay, except a trim on
+  // a picture that no longer plays.
+  function edits(): Edits {
+    const removed = new Set(base.removed);
+    const added = new Set(base.added);
+    const segments = { ...base.segments };
+    for (const [id, on] of changed) {
+      if (inCut(id) && on) removed.delete(id);
+      else if (inCut(id)) removed.add(id);
+      else if (on) added.add(id);
+      else added.delete(id);
+      if (!on) delete segments[base.swaps[id] ?? id];
+    }
+    return { removed: [...removed], segments, swaps: base.swaps, added: [...added] };
   }
 
   // The ticks are the owner's last pass over this cut: saved as a revision, never a recut.
   async function preview() {
     previewing = true;
     refusal = '';
-    const { status, body } = await post<Revision>(`/runs/${encodeURIComponent(runId)}/revisions`, { added: include, removed: exclude });
+    const { status, body } = await post<Revision>(`/runs/${encodeURIComponent(runId)}/revisions`, edits());
     previewing = false;
     if (status !== 201) {
       refusal = body.detail ?? t('The revision could not be saved.');
@@ -181,7 +224,7 @@
 
 <div class="flex flex-col gap-6">
   <div class="flex flex-col gap-2">
-    <a href={`/app/runs/${encodeURIComponent(runId)}`} class="flex w-fit items-center gap-1 text-sm text-gray-600 hover:text-primary dark:text-gray-400">
+    <a href={cutHref} class="flex w-fit items-center gap-1 text-sm text-gray-600 hover:text-primary dark:text-gray-400">
       <svg viewBox="0 0 24 24" class="size-4 fill-current" aria-hidden="true"><path d={mdiArrowLeft} /></svg>{t('Back to the cut')}
     </a>
     <Heading size="large" tag="h1">{t('Pool')}</Heading>
@@ -247,7 +290,7 @@
             item.asset_id === focusId && 'outline-4 outline-offset-2 outline-warning']}>
             <img src={thumbnail(item.asset_id)} alt={item.fate} loading="lazy" decoding="async" class="aspect-[4/3] w-full object-contain" />
             <input type="checkbox" class="absolute top-2 left-2 size-5 accent-[var(--color-primary)]" checked={ticked(item)}
-              aria-label={t('In the film')} onchange={(event) => (ticks = { ...ticks, [item.asset_id]: event.currentTarget.checked })} />
+              aria-label={t('In the film')} onchange={(event) => (ticks = { ...ticks, [slot(item)]: event.currentTarget.checked })} />
             {#if item.asset_id === focusId}<span class="absolute top-2 right-2 rounded bg-warning px-1.5 text-[11px] font-semibold text-black">{t('To replace')}</span>{/if}
             {#if item.kind !== 'photo'}<span class="absolute right-1 bottom-1 rounded bg-black/60 px-1.5 text-[11px] text-white">{item.kind === 'video' ? t('Video') : t('Live')}</span>{/if}
           </label>
@@ -269,9 +312,9 @@
     </ul>
     <div bind:this={sentinel} class="flex h-12 items-center justify-center">{#if loading}<LoadingSpinner />{/if}</div>
 
-    {#if include.length || exclude.length}
+    {#if include || exclude}
       <div class="sticky bottom-20 z-10 flex flex-wrap items-center gap-3 rounded-2xl border border-gray-200 bg-light/95 p-3 shadow-lg backdrop-blur md:bottom-4 dark:border-gray-800">
-        <p class="text-sm">{t('Add: {include} · Take out: {exclude}', { include: include.length, exclude: exclude.length })}</p>
+        <p class="text-sm">{t('Add: {include} · Take out: {exclude}', { include, exclude })}</p>
         <Button size="small" class="ml-auto" leadingIcon={mdiEyeOutline} loading={previewing} onclick={preview}>{t('Preview with these choices')}</Button>
         {#if refusal}<p class="w-full text-sm text-danger" role="alert">{refusal}</p>{/if}
       </div>

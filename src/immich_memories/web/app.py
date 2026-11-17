@@ -22,11 +22,13 @@ from immich_memories.web import (
     pool,
     render_capabilities,
     roster,
+    run_label,
     run_upload,
     runs,
     session,
     settings,
     suggestions,
+    telemetry,
     updates,
 )
 from immich_memories.web.request_validation import validate_json_request
@@ -63,6 +65,7 @@ def mount_web(app: FastAPI, *, client_dir: Path = BUILT_CLIENT) -> None:
     app.middleware("http")(validate_json_request)
     app.include_router(runs.router)
     app.include_router(run_upload.router)
+    app.include_router(run_label.router)
     # The same builder `immich-memories report` prints from, typed for the client (#1428).
     app.include_router(report_api.router)
     app.include_router(cut.router)
@@ -82,6 +85,7 @@ def mount_web(app: FastAPI, *, client_dir: Path = BUILT_CLIENT) -> None:
     app.include_router(session.router)
     app.include_router(media.router)
     app.include_router(i18n.router)
+    app.include_router(telemetry.router)
     app.add_exception_handler(ImmichAPIError, _immich_refused)
     app.add_exception_handler(OSError, _storage_refused)
     root = client_dir.resolve()

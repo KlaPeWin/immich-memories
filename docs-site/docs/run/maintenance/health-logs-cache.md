@@ -100,6 +100,92 @@ Log lines go to stderr. Stdout only carries what a command prints, so `runs stor
 `jq`, whatever the log level. `docker logs` shows both streams.
 
 
+## Traces
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your OpenTelemetry collector's HTTP port and every run is
+traced there: the `run` span at the root, with preparation, discovery, selection and render under
+it, the same spans `report` shows. Spans leave as they close, so a render that takes an hour shows
+up while it runs, and a run that gets killed keeps what it had already sent. Unset, nothing is sent
+and nothing extra is loaded.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_SERVICE_NAME=immich-memories   # the default
+```
+
+- **Each command is one trace.** `immich-memories generate` (or any other command) opens a
+  `cli <command>` span first, so startup, the run and what follows sit under it. The web server
+  is the exception: each request is its own trace. Store queries and programs that belong to no
+  work (startup reads, housekeeping) are not traced, so they don't bury the runs in a search.
+- **One trace from what started the run.** A film started from the web page sits under its
+  `job.<kind>` span; a scheduled one sits under `automation.generate`. The run itself runs in a
+  child process, which inherits the trace through `TRACEPARENT`.
+- The run span carries `run.id`, `run.status`, `run.source` and the run's LLM spend
+  (`llm.prompt_tokens`, `llm.stage.<stage>.completion_tokens`, ...).
+- **The trace starts in your browser.** With tracing on, the web page loads the OpenTelemetry web
+  SDK (about 21 KB gzipped, fetched only then) and records the page load, each page change
+  (`route /runs/[run_id]`, with the requests it makes under it), each action that sends something
+  (`ui POST /cuts`) and every API call. The page sends its spans to the app server, which forwards
+  them to your collector with its own address and token, after taking out query strings, ids and
+  paths. The collector never has to be reachable from the browser. Browser spans carry the service
+  name `immich-memories-web`.
+- **Every hop is a span too.** Each web request is a server span named by its route
+  (`GET /api/v1/films/{film_id}`), and joins the caller's trace when the caller sent one. Its path
+  is the route too, so an account name or group label in the URL stays home. Each HTTP call
+  (Immich, the reader, the render worker, the music service, map tiles) is a client span named by
+  method and path, with ids and tile coordinates replaced by `{id}` and no query string. Each store
+  query is a span with its statement, never its values. Each program the app starts (ffmpeg,
+  ffprobe, ...) is a span with its exit code and its arguments, paths cut to the file name. The
+  values that name people or carry your words (`--person`, `--ask`, `--title`, `--album`,
+  `--birthday`, a caption drawn on a clip, ...) read `{redacted}` unless content capture is on. The render worker and the
+  inference service trace their own side when the same variables are set on them, so a remote
+  render shows up inside the run that asked for it.
+- **Every selection decision is a span.** Each stage that narrows the pool is a
+  `select <stage>` span with how many clips went in, how many came out, how many favourites
+  survived, the stage's own reasons, and one `clip.dropped` event per clip it let go (the first
+  50): its Immich asset id, the reason the stage gave, and what the clip is (file name, when it
+  was taken, its score). An editorial pass adds the model that judged and whether the answer
+  came from the cache. "Why isn't that clip in the film" is a search for its asset id.
+- **The run span carries the film.** Memory type, how many days it covers, the target and real
+  length, file size, clips analysed and selected, where the title came from, and whether it
+  reached Immich. Names, album names and asset ids of the film stay in the store.
+- **Every LLM call is a `chat <model>` span** that follows the OpenTelemetry GenAI conventions:
+  provider, the model asked for and the one that answered, temperature, `max_tokens`, JSON
+  output, the tokens in and out (cached and reasoning included), finish reasons, the reply's id and
+  the server's address. Retries stay inside one span, one `gen_ai.attempt` event each, and the
+  caption worker's calls and each answered batch line get a span too. Some backends have a
+  GenAI view of their own (token cost per model, slow calls), and these spans feed it.
+- **Prompts, replies and names stay out unless you ask for them.** They carry people's names and
+  captions. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` to record them as
+  `gen_ai.input.messages` and `gen_ai.output.messages`, to keep the names and free text in
+  program arguments, and to keep an error's own message. Pictures are never recorded, only how
+  many went in. Paths and keys are cut either way.
+- A failed stage is an error span with its exception: its type and the app's own frames. So is an
+  error a hop records (a refused connection, a route that failed, a store write the database
+  refused) and one the web page forwards. The error's message reads `{redacted}`: it quotes
+  whatever failed, and a store error quotes the values it was writing, a person's name
+  included. With content capture on, the message is kept, with paths cut to the file name and
+  secrets redacted. A reason the app writes itself ("the job exited with status 3") is always
+  kept.
+  Logged warnings are span events, the first 20 per span: the logger that wrote each one, and
+  its line only with content capture on, since a log line can quote a name too.
+- Export is OTLP over HTTP (protobuf). `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with a
+  warning: point the endpoint at port 4318 instead.
+- The standard variables apply: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (used as-is),
+  `OTEL_EXPORTER_OTLP_HEADERS` for a token, `OTEL_EXPORTER_OTLP_TIMEOUT` (milliseconds, as the
+  spec says), `OTEL_RESOURCE_ATTRIBUTES`, and `OTEL_SDK_DISABLED=true` to switch it off.
+- A run sends a lot of spans: tens of thousands of store queries for a year film. The export queue
+  holds 65,536 by default (`OTEL_BSP_MAX_QUEUE_SIZE` changes it); a collector that can't keep up
+  makes the SDK drop the overflow, never slows the run.
+- A collector that's down costs one warning. The run itself is never failed by it, but a process
+  waits up to the timeout (10 seconds by default) for the last spans before it exits.
+
+With `IMMICH_MEMORIES_LOG_FORMAT=json`, every line written inside a span carries its `trace_id` and
+`span_id`, so a log backend can jump from the line to the trace. That includes the server's
+progress lines for a scheduled run. Scheduled runs start as child processes of the server and
+inherit its environment, so setting the variables on the server container covers them.
+
+
 ## Model files
 
 ```bash

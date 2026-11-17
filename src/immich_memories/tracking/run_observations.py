@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
 from functools import wraps
+from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -18,7 +19,8 @@ from immich_memories.db import Store, open_store
 from immich_memories.logging_config import set_current_run_id
 from immich_memories.operations.cancellation import PipelineCancelled
 from immich_memories.storage_errors import storage_failure_message
-from immich_memories.tracking import timing
+from immich_memories.tracking import otel, timing
+from immich_memories.tracking.models import RunMetadata
 from immich_memories.tracking.run_database import RunDatabase
 from immich_memories.tracking.run_tracker import RunTracker
 from immich_memories.tracking.span_store import SpanStore
@@ -72,16 +74,20 @@ def observe_run(
     token = _tracker.set(tracker)
     # Every line from discovery on carries the run id, not just the render phase.
     set_current_run_id(tracker.run_id)
+    run_span = _open_run_span(tracker.run_id, source, memory_type, startup)
     with (
         ExitStack() as cleanup,
+        otel.current(run_span),
         timing.collecting() as collected,
         llm_metrics.collecting() as counters,
     ):
+        cleanup.callback(otel.end, run_span)
         cleanup.callback(_tracker.reset, token)
         cleanup.callback(set_current_run_id, None)
         cleanup.callback(tracker.release_run)
+        _remember_trace(collected)
         try:
-            with timing.span("run") as root:
+            with timing.span("run", traced=False) as root:
                 timing.open_at(root, startup)
                 yield tracker
         except (PipelineCancelled, KeyboardInterrupt):
@@ -95,6 +101,7 @@ def observe_run(
                     _end_on_exit(tracker, error)
             raise
         except BaseException as error:
+            otel.record_error(run_span, timing.describe_error(error))
             with _saving_outcome():
                 tracker.fail_run(storage_failure_message(error) or str(error))
             raise
@@ -103,7 +110,24 @@ def observe_run(
                 tracker.complete_run()
         finally:
             with _saving_outcome():
-                _save_observations(tracker.db, tracker.run_id, collected, counters)
+                _save_observations(tracker.db, tracker.run_id, collected, counters, run_span)
+
+
+def _open_run_span(
+    run_id: str, source: str, memory_type: str | None, startup: process_start.Startup | None
+) -> otel.Span:
+    # The trace's root opens where the process began; it closes once the outcome is saved.
+    return otel.start(
+        "run",
+        {"run.id": run_id, "run.source": source, "run.memory_type": memory_type},
+        at=otel.wall(startup.started) if startup is not None else None,
+    )
+
+
+def _remember_trace(collected: timing.Collector) -> None:
+    # Saved with the run, so its report can name the trace to open.
+    if trace_id := otel.current_trace_id():
+        collected.diagnostics["trace_id"] = trace_id
 
 
 def _still_running(tracker: RunTracker) -> bool:
@@ -131,17 +155,31 @@ def observe_render(config) -> Iterator[None]:
         return
     from immich_memories.tracking.report_context import record_config
 
-    with timing.collecting() as collected, llm_metrics.collecting() as counters:
+    run_span = otel.start("run")
+    with (
+        otel.current(run_span),
+        timing.collecting() as collected,
+        llm_metrics.collecting() as counters,
+    ):
         record_config(config, {})
         try:
-            with timing.span("run"):
+            with timing.span("run", traced=False):
                 yield
+        except BaseException as error:
+            if not timing.clean_exit(error):
+                otel.record_error(run_span, timing.describe_error(error))
+            raise
         finally:
             if collected.run_id is not None:
                 with _saving_outcome():
                     _save_observations(
-                        RunDatabase(open_store(config)), collected.run_id, collected, counters
+                        RunDatabase(open_store(config)),
+                        collected.run_id,
+                        collected,
+                        counters,
+                        run_span,
                     )
+            otel.end(run_span)
 
 
 def _save_observations(
@@ -149,6 +187,7 @@ def _save_observations(
     run_id: str,
     collected: timing.Collector,
     counters: llm_metrics.LLMCounters,
+    run_span: otel.Span | None = None,
 ) -> None:
     saved = database.get_run(run_id)
     if saved is None:
@@ -158,19 +197,54 @@ def _save_observations(
         run_id, saved.status, warnings=list(dict.fromkeys([*saved.warnings, *warnings]))
     )
     database.record_llm_metrics(run_id, counters.as_metrics())
+    llm = {
+        **{key.removeprefix("llm_"): value for key, value in counters.as_metrics().items()},
+        "by_model": {name: asdict(spend) for name, spend in counters.by_model.items()},
+        "by_stage": {name: asdict(spend) for name, spend in counters.by_stage.items()},
+    }
     SpanStore(database.store).save(
         run_id,
         collected,
         **collected.diagnostics,
         private_terms=sorted(collected.private_terms),
         private_ids=sorted(collected.private_ids),
-        llm={
-            **{key.removeprefix("llm_"): value for key, value in counters.as_metrics().items()},
-            "by_model": {name: asdict(spend) for name, spend in counters.by_model.items()},
-            "by_stage": {name: asdict(spend) for name, spend in counters.by_stage.items()},
-        },
+        llm=llm,
     )
     _export_timings(database.store, run_id, collected)
+    if run_span is not None:
+        # Read back: the outcome above is the one saved, so the trace and `runs show` agree.
+        final = database.get_run(run_id) or saved
+        otel.finish_run(
+            run_span,
+            run_id=run_id,
+            status=final.status,
+            source=final.source,
+            llm=llm,
+            film=_film(final),
+        )
+
+
+def _film(run: RunMetadata) -> dict[str, Any]:
+    """What the run made, for its trace. Names, albums and asset ids stay in the store."""
+    span_days = (
+        (run.date_range_end - run.date_range_start).days + 1
+        if run.date_range_start and run.date_range_end
+        else None
+    )
+    return {
+        "memory.type": run.memory_type,
+        "memory.category": run.memory_category,
+        "memory.span_days": span_days,
+        "film.target_seconds": run.target_duration_seconds,
+        "film.duration_seconds": run.output_duration_seconds or None,
+        "film.size_bytes": run.output_size_bytes or None,
+        "film.clips.analyzed": run.clips_analyzed,
+        "film.clips.selected": run.clips_selected,
+        "film.title_source": run.title_source,
+        "film.delivery": str(run.delivery_status),
+        "film.delivery.attempts": run.delivery_attempts or None,
+        "run.errors": run.errors_count or None,
+    }
 
 
 def _export_timings(store: Store, run_id: str, collected: timing.Collector) -> None:

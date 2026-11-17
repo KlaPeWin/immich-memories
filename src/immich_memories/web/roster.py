@@ -7,13 +7,15 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from immich_memories.api.person_expression import PersonExpression
 from immich_memories.config.loader import Config
 from immich_memories.config.models.resources import PRIMARY_ACCOUNT
 from immich_memories.db import Store, open_store
+from immich_memories.people import family_tree as tree_reading
+from immich_memories.people.companion import load_document
 from immich_memories.people.editor import (
     RELINK,
     ROLE_SUGGESTIONS,
@@ -34,7 +36,14 @@ from immich_memories.people.groups import add_group, list_groups, remove_group
 from immich_memories.people.relationships import RELATIONSHIP_CHOICES
 from immich_memories.people.vanished_faces import heal_store, picture_counter
 from immich_memories.web.dependencies import current_config
-from immich_memories.web.schemas import RosterPerson
+from immich_memories.web.schemas import (
+    FamilyTree,
+    RosterPerson,
+    TreeChild,
+    TreeFamily,
+    TreePerson,
+    TreeSuggestion,
+)
 
 router = APIRouter(prefix="/api/v1/roster", tags=["people"])
 logger = logging.getLogger(__name__)
@@ -161,6 +170,7 @@ def _alias_url(config: Config, account: str, alias_id: str) -> str | None:
 
 @router.get("", response_model=Roster)
 def roster(
+    request: Request,
     store: Annotated[Store, Depends(people_store)],
     config: Annotated[Config, Depends(current_config)],
     follow_faces: Annotated[Callable[[Store], None], Depends(face_follower)],
@@ -168,8 +178,12 @@ def roster(
     """Everyone in the people registry, inner circle first, with what needs curating.
 
     A person whose face Immich merged away is followed to their new one first, and saved.
+    A request another site sent gets the roster as saved: no Immich call, no write.
     """
-    follow_faces(store)
+    from immich_memories.web.request_origin import cross_site_request
+
+    if not cross_site_request(dict(request.headers), config):
+        follow_faces(store)
     people = load_people(store)
     return Roster(
         people=[_shown(person, config) for person in people],
@@ -186,6 +200,47 @@ def roster(
         ],
         relationships=[Choice(kind=c.kind, label=c.label) for c in RELATIONSHIP_CHOICES],
         roles=list(ROLE_SUGGESTIONS),
+    )
+
+
+@router.get("/tree", response_model=FamilyTree)
+def tree(store: Annotated[Store, Depends(people_store)]) -> FamilyTree:
+    """The family tree the confirmed relationships draw, laid out row by row.
+
+    Parents, children, partners and siblings draw it; everyone else is counted in `left_out`.
+    The page draws it from this, in the browser; nothing about it leaves the app's server.
+    """
+    return _tree_view(tree_reading.family_tree(load_document(store)))
+
+
+def _tree_view(tree: tree_reading.FamilyTree) -> FamilyTree:
+    return FamilyTree(
+        people=[
+            TreePerson(
+                person_id=p.person_id,
+                name=p.name,
+                birth_year=p.birth_year,
+                generation=p.generation,
+                x=p.x,
+                owner=p.owner,
+            )
+            for p in tree.people
+        ],
+        couples=list(tree.couples),
+        families=[
+            TreeFamily(
+                parents=list(f.parents),
+                children=[
+                    TreeChild(person_id=c.person_id, through_sibling=c.through_sibling)
+                    for c in f.children
+                ],
+            )
+            for f in tree.families
+        ],
+        suggestions=[
+            TreeSuggestion(source=s.source, kind=s.kind, target=s.target) for s in tree.suggestions
+        ],
+        left_out=tree.left_out,
     )
 
 

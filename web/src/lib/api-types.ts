@@ -662,6 +662,7 @@ export interface paths {
          * @description Everyone in the people registry, inner circle first, with what needs curating.
          *
          *     A person whose face Immich merged away is followed to their new one first, and saved.
+         *     A request another site sent gets the roster as saved: no Immich call, no write.
          */
         get: operations["roster_api_v1_roster_get"];
         put?: never;
@@ -796,6 +797,29 @@ export interface paths {
          * @description Read the library's people again with `people scan`, keeping every answer given.
          */
         post: operations["scan_people_api_v1_roster_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/roster/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tree
+         * @description The family tree the confirmed relationships draw, laid out row by row.
+         *
+         *     Parents, children, partners and siblings draw it; everyone else is counted in `left_out`.
+         *     The page draws it from this, in the browser; nothing about it leaves the app's server.
+         */
+        get: operations["tree_api_v1_roster_tree_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1038,6 +1062,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Relabel Run Film
+         * @description Write this run's current description and tags to the film Immich holds, and take off
+         *     the app's own tags the label no longer has.
+         */
+        post: operations["relabel_run_film_api_v1_runs__run_id__label_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/music-preview": {
         parameters: {
             query?: never;
@@ -1150,7 +1195,7 @@ export interface paths {
         };
         /**
          * List Revisions
-         * @description Every saved revision of this cut, oldest first.
+         * @description Every saved revision of this cut, oldest first, each with the pictures it adds.
          */
         get: operations["list_revisions_api_v1_runs__run_id__revisions_get"];
         put?: never;
@@ -1340,6 +1385,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status
+         * @description Whether the server exports traces, and so whether the client should load its tracer.
+         */
+        get: operations["status_api_v1_telemetry_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/telemetry/traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Traces
+         * @description Forward the client's OTLP/JSON batch to the collector, scrubbed.
+         */
+        post: operations["traces_api_v1_telemetry_traces_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/trips": {
         parameters: {
             query?: never;
@@ -1375,6 +1460,9 @@ export interface paths {
         /**
          * Check
          * @description Ask GitHub now. Only the button calls this: nothing goes out until somebody asks.
+         *
+         *     A request another site sent (an image tag, a top-level navigation) is refused, so a
+         *     visited page cannot make this server call out.
          */
         get: operations["check_api_v1_updates_get"];
         put?: never;
@@ -1805,6 +1893,22 @@ export interface components {
              */
             level: "anyone" | "family" | "just-us";
         };
+        /** FamilyTree */
+        FamilyTree: {
+            /** Couples */
+            couples: [
+                string,
+                string
+            ][];
+            /** Families */
+            families: components["schemas"]["TreeFamily"][];
+            /** Left Out */
+            left_out: number;
+            /** People */
+            people: components["schemas"]["TreePerson"][];
+            /** Suggestions */
+            suggestions: components["schemas"]["TreeSuggestion"][];
+        };
         /** FlagAnswer */
         FlagAnswer: {
             /** Kind */
@@ -1897,12 +2001,24 @@ export interface components {
              */
             history: components["schemas"]["JobStage"][];
             /**
+             * Key
+             * @default
+             */
+            key: string;
+            /**
              * Label
              * @default
              */
             label: string;
             /** Last Completed At */
             last_completed_at?: number | null;
+            /**
+             * Params
+             * @default {}
+             */
+            params: {
+                [key: string]: string | number;
+            };
             /**
              * Pass Id
              * @default 0
@@ -1948,8 +2064,20 @@ export interface components {
         JobStage: {
             /** Done */
             done?: number | null;
+            /**
+             * Key
+             * @default
+             */
+            key: string;
             /** Label */
             label: string;
+            /**
+             * Params
+             * @default {}
+             */
+            params: {
+                [key: string]: string | number;
+            };
             /**
              * Pass Id
              * @default 0
@@ -2267,6 +2395,23 @@ export interface components {
              */
             status: "ok" | "warning" | "error" | "skipped";
         };
+        /**
+         * RelabelAnswer
+         * @description What re-labelling a delivered film in Immich did.
+         */
+        RelabelAnswer: {
+            /** Detail */
+            detail: string;
+            /** Removed Tags */
+            removed_tags: string[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "written" | "unchanged" | "asset_gone" | "rights_missing" | "failed";
+            /** Warnings */
+            warnings: string[];
+        };
         /** Relationship */
         Relationship: {
             /** Kind */
@@ -2352,6 +2497,11 @@ export interface components {
              * @default []
              */
             added: string[];
+            /**
+             * Additions
+             * @default []
+             */
+            additions: components["schemas"]["CutShot"][];
             /** Content Seconds */
             content_seconds: number;
             /** Created At */
@@ -2425,6 +2575,15 @@ export interface components {
             /** Roles */
             roles: string[];
         };
+        /** RosterChainStep */
+        RosterChainStep: {
+            /** Kind */
+            kind: string;
+            /** Other */
+            other: string;
+            /** Person */
+            person: string;
+        };
         /** RosterFlag */
         RosterFlag: {
             /** Kind */
@@ -2438,6 +2597,11 @@ export interface components {
         };
         /** RosterLink */
         RosterLink: {
+            /**
+             * Chain
+             * @default []
+             */
+            chain: components["schemas"]["RosterChainStep"][];
             /** Confidence */
             confidence: number;
             /** Decision */
@@ -2892,12 +3056,58 @@ export interface components {
             /** Skipped */
             skipped: components["schemas"]["Skipped"][];
         };
+        /**
+         * TelemetryStatus
+         * @description Whether the server exports traces, and so whether the client loads its tracer.
+         */
+        TelemetryStatus: {
+            /** Traces */
+            traces: boolean;
+        };
         /** TraceBlock */
         TraceBlock: {
             /** Head */
             head: string;
             /** Lines */
             lines: string[];
+        };
+        /** TreeChild */
+        TreeChild: {
+            /** Person Id */
+            person_id: string;
+            /** Through Sibling */
+            through_sibling: boolean;
+        };
+        /** TreeFamily */
+        TreeFamily: {
+            /** Children */
+            children: components["schemas"]["TreeChild"][];
+            /** Parents */
+            parents: string[];
+        };
+        /** TreePerson */
+        TreePerson: {
+            /** Birth Year */
+            birth_year: number | null;
+            /** Generation */
+            generation: number;
+            /** Name */
+            name: string;
+            /** Owner */
+            owner: boolean;
+            /** Person Id */
+            person_id: string;
+            /** X */
+            x: number;
+        };
+        /** TreeSuggestion */
+        TreeSuggestion: {
+            /** Kind */
+            kind: string;
+            /** Source */
+            source: string;
+            /** Target */
+            target: string;
         };
         /** TripChoice */
         TripChoice: {
@@ -4175,6 +4385,26 @@ export interface operations {
             };
         };
     };
+    tree_api_v1_roster_tree_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FamilyTree"];
+                };
+            };
+        };
+    };
     answer_api_v1_roster__person_id__put: {
         parameters: {
             query?: never;
@@ -4586,6 +4816,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    relabel_run_film_api_v1_runs__run_id__label_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RelabelAnswer"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5101,6 +5362,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    status_api_v1_telemetry_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TelemetryStatus"];
+                };
+            };
+        };
+    };
+    traces_api_v1_telemetry_traces_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
