@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Button, Heading, LoadingSpinner, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
@@ -37,6 +38,9 @@
   let chosenPeople = $state<string[]>((params.get('person') ?? '').split(',').filter(Boolean));
   let takenFrom = $state(params.get('from') ?? '');
   let takenTo = $state(params.get('to') ?? '');
+  // The shot being replaced, from the cut's button: highlighted, and scrolled to once it is on the page.
+  const focusId = params.get('focus') ?? '';
+  let scrolled = false;
   let people = $state<Pool['people']>([]);
   const filtered = $derived(kinds.length > 0 || favourite || chosenPeople.length > 0 || takenFrom !== '' || takenTo !== '');
 
@@ -61,6 +65,7 @@
     if (chosenPeople.length) query.set('person', chosenPeople.join(','));
     if (takenFrom) query.set('from', takenFrom);
     if (takenTo) query.set('to', takenTo);
+    if (focusId) query.set('focus', focusId);
     const text = query.toString();
     void goto(`${page.url.pathname}${text ? `?${text}` : ''}`, { replaceState: true, keepFocus: true, noScroll: true });
   }
@@ -121,6 +126,12 @@
     total = null;
     void more();
   }
+
+  $effect(() => {
+    if (!focusId || scrolled || !items.some((item) => item.asset_id === focusId)) return;
+    scrolled = true;
+    void tick().then(() => document.getElementById(`pool-${focusId}`)?.scrollIntoView({ block: 'center' }));
+  });
 
   $effect(() => {
     if (!sentinel) return;
@@ -231,11 +242,13 @@
   {:else}
     <ul class="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-x-3 gap-y-5" aria-label={t('Pool')}>
       {#each items as item (item.asset_id)}
-        <li class="flex flex-col gap-1.5">
-          <label class={['relative block cursor-pointer overflow-hidden rounded-xl bg-gray-100 dark:bg-gray-900', ticked(item) ? 'ring-2 ring-primary' : 'opacity-70']}>
+        <li id={`pool-${item.asset_id}`} class="flex scroll-mt-24 flex-col gap-1.5">
+          <label class={['relative block cursor-pointer overflow-hidden rounded-xl bg-gray-100 dark:bg-gray-900', ticked(item) ? 'ring-2 ring-primary' : 'opacity-70',
+            item.asset_id === focusId && 'outline-4 outline-offset-2 outline-warning']}>
             <img src={thumbnail(item.asset_id)} alt={item.fate} loading="lazy" decoding="async" class="aspect-[4/3] w-full object-contain" />
             <input type="checkbox" class="absolute top-2 left-2 size-5 accent-[var(--color-primary)]" checked={ticked(item)}
               aria-label={t('In the film')} onchange={(event) => (ticks = { ...ticks, [item.asset_id]: event.currentTarget.checked })} />
+            {#if item.asset_id === focusId}<span class="absolute top-2 right-2 rounded bg-warning px-1.5 text-[11px] font-semibold text-black">{t('To replace')}</span>{/if}
             {#if item.kind !== 'photo'}<span class="absolute right-1 bottom-1 rounded bg-black/60 px-1.5 text-[11px] text-white">{item.kind === 'video' ? t('Video') : t('Live')}</span>{/if}
           </label>
           <p class="flex flex-wrap items-center gap-1.5 text-[11px] text-gray-600 tabular-nums dark:text-gray-400">

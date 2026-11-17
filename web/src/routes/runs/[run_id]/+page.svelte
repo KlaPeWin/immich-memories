@@ -93,7 +93,7 @@
       date.setUTCDate(date.getUTCDate() + offset);
       return date.toISOString().slice(0, 10);
     };
-    const query = new URLSearchParams({ from: day(-1), to: day(1) });
+    const query = new URLSearchParams({ from: day(-1), to: day(1), focus: shot.asset_id });
     return `/app/runs/${encodeURIComponent(run.run_id)}/pool?${query}`;
   }
 

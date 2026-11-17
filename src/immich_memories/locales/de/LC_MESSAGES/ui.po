@@ -2511,3 +2511,7 @@ msgstr "Filter"
 #: web/routes/runs/[run_id]/+page.svelte
 msgid "Find an alternative in the pool"
 msgstr "Alternative in den verfügbaren Medien suchen"
+
+#: web/routes/runs/[run_id]/pool/+page.svelte
+msgid "To replace"
+msgstr "Ersetzen"
